@@ -20,10 +20,14 @@
  * SOFTWARE.
  */
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <iostream>
 #include <fstream>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <locale>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
@@ -50,17 +54,12 @@ int          height = 0;
 int          row_height = 96;
 int          border_size = 16;
 
-std::string  filename;
-std::string  res_filename;
+std::string  font_filename;
+std::string  txt_in_filename;
+std::string  txt_out_filename;
 F2           tex_size = F2( 1024, 1024 );
 
-
-struct UnicodeRange {
-    uint32_t start;
-    uint32_t end;
-};
-
-std::vector<UnicodeRange> unicode_ranges;
+std::vector<uint32_t> unicode_values;
 
 
 std::string help = R"(Program for generating signed distance field font atlas.
@@ -70,11 +69,10 @@ License: MIT
 Usage: sdf_atlas -f font_file.ttf [options]
 Options:
     -h              this help
+    -i 'filename'  input text file containing characters that need to be included in atlas
     -o 'filename'   output file name (without extension)
     -tw 'size'      atlas image width in pixels, default 1024
     -th 'size'      atlas image height in pixels (optional)
-    -ur 'ranges'    unicode ranges 'start1:end1,start:end2,single_codepoint' without spaces,
-                    default: 31:126,0xffff
     -bs 'size'      SDF distance in pixels, default 16
     -rh 'size'      row height in pixels (without SDF border), default 96
 Example:
@@ -86,12 +84,16 @@ void show_help( ArgsParser* ) {
     exit( 0 );
 }
 
-void read_filename( ArgsParser* ap ) {
-    filename = ap->word();
+void read_font_filename( ArgsParser* ap ) {
+    font_filename = ap->word();
 }
 
-void read_res_filename( ArgsParser* ap ) {
-    res_filename = ap->word();
+void read_txt_in_filename(ArgsParser* ap) {
+    txt_in_filename = ap->word();
+}
+
+void read_txt_out_filename( ArgsParser* ap ) {
+    txt_out_filename = ap->word();
 }
 
 void read_tex_width( ArgsParser *ap ) {
@@ -138,51 +140,6 @@ void read_border_size( ArgsParser *ap ) {
     }
 }
 
-void read_unicode_ranges( ArgsParser *ap ) {
-    errno = 0;
-    int range_start = 0;
-    int range_end   = 0;
-
-    std::string nword = ap->word();
-    char *pos = const_cast<char*>( nword.c_str() );
-
-    for(;;) {
-        errno = 0;
-        char *new_pos = pos;
-        range_start = strtol( pos, &new_pos, 0 );
-        if ( errno != 0 || range_start < 0 ) {
-            std::cerr << "Error reading unicode ranges" << std::endl;
-            exit( 1 );
-        }
-        range_end = range_start;
-
-        pos = new_pos;
-        char lim = *pos++;
-
-        if ( lim == ':' ) {
-            errno = 0;
-            range_end = strtol( pos, &new_pos, 0 );
-            if ( errno != 0 || range_end < 0 ) {
-                std::cerr << "Error reading unicode ranges" << std::endl;
-                exit( 1 );
-            }
-            pos = new_pos;
-            lim = *pos++;
-        }
-        
-        if ( lim == ',' ) {
-            unicode_ranges.push_back( UnicodeRange { (uint32_t) range_start, (uint32_t) range_end } );
-            continue;
-        } else if ( lim == 0 ) {
-            unicode_ranges.push_back( UnicodeRange { (uint32_t) range_start, (uint32_t) range_end } );
-            return;
-        } else {
-            std::cerr << "Error reading unicode ranges" << std::endl;
-            exit( 1 );
-        }
-    }
-};
-
 void render() {
     glClearColor( 0.0, 0.0, 0.0, 0.0 );
     glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
@@ -228,31 +185,44 @@ int main( int argc, char* argv[] ) {
     glGetIntegerv( GL_MAX_RENDERBUFFER_SIZE, &max_tex_size );
 
     args.commands["-h"]  = show_help;    
-    args.commands["-f"]  = read_filename;
-    args.commands["-o"]  = read_res_filename;
+    args.commands["-f"]  = read_font_filename;
+    args.commands["-i"]  = read_txt_in_filename;
+    args.commands["-o"]  = read_txt_out_filename;
     args.commands["-tw"] = read_tex_width;
     args.commands["-th"] = read_tex_height;
-    args.commands["-ur"] = read_unicode_ranges;
     args.commands["-bs"] = read_border_size;
     args.commands["-rh"] = read_row_height;
     args.run( argc, argv );
 
-    if ( filename.empty() ) {
+    if ( font_filename.empty() ) {
         std::cerr << "Input file not specified" << std::endl;
         exit( 1 );
     }
 
-    if ( res_filename.empty() ) {
-        size_t ext_dot = filename.find_last_of( "." );
-        if ( ext_dot == std::string::npos ) {
-            res_filename = filename;
-        } else {
-            res_filename = filename.substr( 0, ext_dot );
+    if ( !txt_in_filename.empty() ) {
+        std::wifstream inputFile(txt_in_filename);
+        if (inputFile) {
+            inputFile.imbue(std::locale("en_US.UTF-8"));
+            wchar_t ch;
+            while (inputFile.get(ch)) {
+                unicode_values.push_back(ch);
+            }
+            inputFile.close();
+            std::sort(unicode_values.begin(), unicode_values.end());
         }
     }
 
-    if ( !font.load_ttf_file( filename.c_str() ) ) {
-        std::cerr << "Error reading TTF file '" << filename << "' " << std::endl;
+    if ( txt_out_filename.empty() ) {
+        size_t ext_dot = font_filename.find_last_of( "." );
+        if ( ext_dot == std::string::npos ) {
+            txt_out_filename = font_filename;
+        } else {
+            txt_out_filename = font_filename.substr( 0, ext_dot );
+        }
+    }
+
+    if ( !font.load_ttf_file( font_filename.c_str() ) ) {
+        std::cerr << "Error reading TTF file '" << font_filename << "' " << std::endl;
         exit( 1 );
     }
 
@@ -260,12 +230,12 @@ int main( int argc, char* argv[] ) {
 
     sdf_atlas.init( &font, width, row_height, border_size );
 
-    if ( unicode_ranges.empty() ) {
+    if ( unicode_values.empty() ) {
         sdf_atlas.allocate_unicode_range( 0x21, 0x7e );
         sdf_atlas.allocate_unicode_range( 0xffff, 0xffff );
     } else {
-        for ( const UnicodeRange& ur : unicode_ranges ) {
-            sdf_atlas.allocate_unicode_range( ur.start, ur.end );
+        for ( uint32_t v : unicode_values ) {
+            sdf_atlas.allocate_codepoint(v);
         }
     }
     
@@ -335,7 +305,7 @@ int main( int argc, char* argv[] ) {
 
     // Saving the picture
 
-    std::string png_filename = res_filename + ".png";
+    std::string png_filename = txt_out_filename + ".png";
     if ( !stbi_write_png( png_filename.c_str(), width, height, 1, picbuf, width ) ) {
         std::cout << "Error writing png file." << std::endl;
         exit( 1 );
@@ -347,7 +317,7 @@ int main( int argc, char* argv[] ) {
 
     std::string json = sdf_atlas.json( height );
     std::ofstream json_file;
-    json_file.open( res_filename + ".js" );
+    json_file.open( txt_out_filename + ".js" );
     if ( !json_file ) {
         std::cout << "Error writing json file." << std::endl;
     }
